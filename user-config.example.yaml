@@ -1,0 +1,34 @@
+# 先复制为 user-config.yaml，再填写使用者自己的信息。
+# 本文件没有可用的代理凭据。不要把填好后的 user-config.yaml 转发给其他人。
+
+# 仅支持 Windows + Clash Verge Rev；路径留空则自动查找。
+clash_data_directory: ''
+clash_core_path: ''
+physical_interface: ''
+
+# 服务商承诺的最终公网 IPv4，用于登记。它可以与代理服务器连接地址不同。
+expected_exit_ipv4: YOUR_FIXED_EXIT_IPV4
+
+# 机场订阅先由使用者自己导入 Clash，并选择为当前远程订阅；不在此文件填写订阅 URL。
+# 下方 final_exit 是“最后一跳”的完整 Mihomo 节点。以下示例为 Trojan。
+final_exit:
+  type: trojan
+  server: YOUR_FINAL_SERVER_IPV4
+  port: 443
+  password: YOUR_FINAL_PASSWORD
+  sni: YOUR_FINAL_TLS_HOSTNAME
+  udp: true
+
+# bootstrap 是能从本地直接连接的完整代理，用来在首次安装时经 Cloudflare 解析机场地址。
+# 为避免域名解析回环，这里的 server 也必须填公网 IPv4。可使用另一个节点，
+# 或使用可直连的 final_exit 同一节点；示例展示 TUIC，支持改成其他兼容协议。
+bootstrap:
+  type: tuic
+  server: YOUR_BOOTSTRAP_SERVER_IPV4
+  port: 443
+  uuid: YOUR_BOOTSTRAP_UUID
+  password: YOUR_BOOTSTRAP_PASSWORD
+  sni: YOUR_BOOTSTRAP_TLS_HOSTNAME
+  alpn:
+  - h3
+  udp: true

@@ -1,0 +1,49 @@
+# Private recipient configuration and credentials
+user-config.yaml
+user-config.yml
+settings.json
+data/
+backups/
+repair-backups/
+*.wfw
+*.db
+*.db-*
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+
+# Local diagnostics, subscriptions, runtime state and exports
+sync-status.json
+install-result.json
+rollback-result.json
+*diagnostics*.json
+*network-check*.json
+*.log
+*.subsync-new
+candidate.yaml
+initial.yaml
+clash-verge.yaml
+profiles.yaml
+profiles/
+*.zip
+dist/
+SHA256SUMS.txt
+
+# Python, virtual environments, editors
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# The only bundled example must remain visible
+!user-config.example.yaml

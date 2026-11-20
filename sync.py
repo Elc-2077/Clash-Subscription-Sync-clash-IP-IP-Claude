@@ -1,0 +1,193 @@
+"""Subscription synchronization only. Never blocks traffic or controls the Clash app."""
+import concurrent.futures, copy, ctypes, datetime, hashlib, http.client, ipaddress, json, os
+import subprocess, sys, time, urllib.parse, urllib.request
+from pathlib import Path
+import psutil, yaml
+from sync_model import BOOT, PREFIX, entries, overlay, enhancement, stamp, public4
+
+ROOT=Path(__file__).resolve().parent
+DATA=ROOT/'data'
+def read(path):return json.loads(Path(path).read_text(encoding='utf-8-sig'))
+def load(path):return yaml.safe_load(Path(path).read_text(encoding='utf-8-sig')) or {}
+def dump(value):return yaml.safe_dump(value,allow_unicode=True,sort_keys=False)
+def atomic(path,text):
+    p=Path(path);tmp=p.with_name(p.name+'.subsync-new');tmp.write_text(text,encoding='utf-8');os.replace(str(tmp),str(p))
+def save(path,value):atomic(path,json.dumps(value,ensure_ascii=True,indent=2))
+def settings():return read(ROOT/'settings.json')
+def status(state,detail='',**fields):
+    value={'state':state,'detail':detail,'time':datetime.datetime.now().astimezone().isoformat(),**fields}
+    save(DATA/'status.json',value)
+    destination=settings().get('report_dir')
+    if destination:
+        try:save(Path(destination)/'sync-status.json',value)
+        except OSError:pass
+def log(message):
+    with (DATA/'sync.log').open('a',encoding='utf-8') as stream:stream.write(datetime.datetime.now().astimezone().isoformat()+' '+message+'\n')
+def running():
+    for process in psutil.process_iter(['name']):
+        if (process.info.get('name') or '').lower()=='clash-verge.exe':return True
+    return False
+def profile():
+    base=Path(settings()['base']);profiles=load(base/'profiles.yaml')
+    item=next(x for x in profiles['items'] if x.get('uid')==profiles.get('current'))
+    if item.get('type')!='remote':raise ValueError('请选择远程机场订阅')
+    raw=load(base/'profiles'/Path(item['file']).name);entries(raw)
+    return item,raw
+
+def api(method,path,body=None):
+    # This entire worker has a parent watchdog deadline; even a stalled pipe read
+    # cannot stop the daemon, original application or local network.
+    config=load(Path(settings()['base'])/'config.yaml')
+    pipe=open(config.get('external-controller-pipe',r'\\.\pipe\verge-mihomo'),'r+b',buffering=0)
+    class PipeSocket:
+        def makefile(self,*args,**kwargs):return pipe
+    payload=json.dumps(body).encode() if body is not None else b''
+    header=('%s %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n'%(method,path,config.get('secret',''),len(payload))).encode()
+    try:
+        pipe.write(header+payload);response=http.client.HTTPResponse(PipeSocket());response.begin();content=response.read()
+        if response.status>=300:raise ValueError('Core API HTTP '+str(response.status))
+        return json.loads(content) if content else {}
+    finally:pipe.close()
+
+def preferred(current):
+    proxies=current.get('proxies',{});name=proxies.get('GLOBAL',{}).get('now','')
+    if name not in ('出口选择','FIXED-EXIT','') and not name.startswith('__'):return name
+    airport=proxies.get('机场入口',{}).get('now','')
+    if airport.startswith('__AIRPORT__'):return airport[len('__AIRPORT__'):]
+    return ''
+
+def resolve(hosts,opener=None):
+    result={};pending=[]
+    for host in sorted(set(hosts)):
+        try:result[host]=[public4(host)]
+        except ValueError:pending.append(host)
+    port=int(load(Path(settings()['base'])/'config.yaml').get('mixed-port',7897))
+    op=opener or urllib.request.build_opener(urllib.request.ProxyHandler({'https':'http://127.0.0.1:'+str(port)}))
+    def query(host):
+        for attempt in range(2):
+            try:
+                request=urllib.request.Request('https://1.1.1.1/dns-query?'+urllib.parse.urlencode({'name':host,'type':'A'}),headers={'Accept':'application/dns-json'})
+                with op.open(request,timeout=5) as response:answer=json.load(response)
+                values=sorted({public4(a['data']) for a in answer.get('Answer',[]) if a.get('type')==1})
+                if answer.get('Status')==0 and values:return host,values
+            except Exception:pass
+        return host,[]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for host,addresses in pool.map(query,pending):result[host]=addresses
+    return result
+
+def routes(action,addresses=None):
+    if addresses is not None:save(DATA/'endpoints.json',{'addresses':sorted(set(addresses))})
+    command=[str(Path(os.environ['SystemRoot'])/'System32'/'WindowsPowerShell'/'v1.0'/'powershell.exe'),'-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(ROOT/'Routes.ps1'),'-Action',action]
+    result=subprocess.run(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30,creationflags=0x08000000)
+    if result.returncode:raise ValueError('Endpoint route '+action+' failed')
+
+def sync_once():
+    if not running():return
+    st=settings();base=Path(st['base']);item,raw=profile();before_stamp=stamp(item['uid'],raw)
+    choice=preferred(api('GET','/proxies'))
+    addresses=resolve([n['server'] for n in entries(raw)])
+    value=overlay(raw,read(DATA/'seed.json'),addresses,choice,load(base/'verge.yaml').get('enable_tun_mode',True))
+    candidate=dict(load(base/'config.yaml'),**value)
+    atomic(DATA/'candidate.yaml',dump(candidate))
+    checked=subprocess.run([st['core'],'-t','-d',str(base),'-f',str(DATA/'candidate.yaml')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=20,creationflags=0x08000000)
+    if checked.returncode:raise ValueError('Mihomo rejected subscription candidate')
+    new_item,new_raw=profile()
+    if not running() or stamp(new_item['uid'],new_raw)!=before_stamp:raise ValueError('Subscription changed while preparing; retry later')
+    # Host routes affect only prepared proxy endpoints. No default route, firewall,
+    # DNS adapter setting or application process is changed by this tool.
+    routes('Add',[p.split('/')[0] for p in value['tun']['route-exclude-address']])
+    changes={base/'profiles'/'Script.js':enhancement(value),base/'profiles'/'SubSync.js':enhancement(value)}
+    basic=load(base/'config.yaml')
+    for key in ('tun','mode','ipv6','interface-name'):basic[key]=value[key]
+    changes[base/'config.yaml']=dump(basic)
+    merge=load(base/'profiles'/'Merge.yaml') if (base/'profiles'/'Merge.yaml').exists() else {}
+    for key in ('tun','dns','mode','ipv6','interface-name'):merge[key]=value[key]
+    changes[base/'profiles'/'Merge.yaml']=dump(merge)
+    changes[base/'dns_config.yaml']=dump({'dns':value['dns']})
+    changes[base/'clash-verge.yaml']=dump(candidate)
+    original={p:p.read_bytes() if p.exists() else None for p in changes}
+    try:
+        for path,text in changes.items():atomic(path,text)
+        if not running():raise ValueError('Clash exited; retaining last usable configuration')
+        api('PUT','/configs?force=true',{'path':str(base/'clash-verge.yaml')})
+        choices=value['proxy-groups'][0]['proxies']
+        selected=choice if choice in choices else choices[0]
+        api('PUT','/proxies/GLOBAL',{'name':selected})
+        api('DELETE','/connections')
+    except Exception:
+        for path,content in original.items():
+            if content is None:
+                if path.exists():path.unlink()
+            else:path.write_bytes(content)
+        if running():
+            try:api('PUT','/configs?force=true',{'path':str(base/'clash-verge.yaml')})
+            except Exception:pass
+        raise
+    count=len(value['proxy-groups'][0]['proxies'])
+    summary={'stamp':before_stamp,'time':time.time(),'nodes':count,'selected':selected,'fixed_exit':read(DATA/'seed.json')['expected_ipv4'],'skipped_nodes':len(entries(raw))-count}
+    save(DATA/'committed.json',summary)
+    status('READY','订阅与机场地址已同步；最终出口保持用户配置的固定节点',**summary)
+
+def kill_worker(process):
+    try:
+        children=psutil.Process(process.pid).children(recursive=True)
+        for child in reversed(children):
+            try:child.kill()
+            except psutil.Error:pass
+        process.kill();process.wait(timeout=5)
+    except (psutil.Error,OSError,subprocess.TimeoutExpired):pass
+
+def daemon():
+    kernel=ctypes.windll.kernel32
+    kernel.CreateMutexW.argtypes=[ctypes.c_void_p,ctypes.c_bool,ctypes.c_wchar_p]
+    kernel.CreateMutexW.restype=ctypes.c_void_p
+    kernel.CloseHandle.argtypes=[ctypes.c_void_p]
+    mutex=kernel.CreateMutexW(None,False,'Global\\ClashSubscriptionSync')
+    if not mutex:raise OSError('Cannot create subscription synchronizer mutex')
+    if ctypes.windll.kernel32.GetLastError()==183:return
+    worker=None;worker_at=0;next_try=0;was_running=False;next_poll=0;force_refresh=False
+    status('WAITING','等待 Clash 原生启动；不控制网络或应用启停')
+    try:
+        while True:
+            up=running()
+            if not up:
+                if worker and worker.poll() is None:kill_worker(worker)
+                worker=None
+                if was_running or (DATA/'routes.json').exists():
+                    try:routes('Cleanup');status('WAITING','Clash 已退出；同步器添加的机场地址路由已清理')
+                    except Exception as exc:log('Route cleanup retry: '+type(exc).__name__)
+                was_running=False;next_try=0
+            else:
+                if not was_running:next_try=time.time()+4;was_running=True;force_refresh=True
+                if worker:
+                    if worker.poll() is not None:
+                        if worker.returncode:next_try=time.time()+30
+                        worker=None
+                    elif time.time()-worker_at>110:
+                        kill_worker(worker);worker=None;next_try=time.time()+30
+                        status('RETRY','订阅同步超时，保留原链路；稍后重试')
+                if not worker and time.time()>=next_try and time.time()>=next_poll:
+                    next_poll=time.time()+3
+                    try:
+                        item,raw=profile();committed=read(DATA/'committed.json') if (DATA/'committed.json').exists() else {}
+                        if force_refresh or committed.get('stamp')!=stamp(item['uid'],raw) or time.time()-committed.get('time',0)>900:
+                            status('SYNCING','检测到订阅变化，准备 Cloudflare 地址解析和节点链路')
+                            worker=subprocess.Popen([settings()['python'],str(ROOT/'sync.py'),'--once'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=0x08000000)
+                            worker_at=time.time();next_try=time.time()+30
+                            force_refresh=False
+                    except Exception as exc:status('RETRY',type(exc).__name__);next_try=time.time()+30
+            time.sleep(.5)
+    finally:
+        if worker and worker.poll() is None:kill_worker(worker)
+        kernel.CloseHandle(mutex)
+
+if __name__=='__main__':
+    try:
+        if '--once' in sys.argv:sync_once()
+        else:daemon()
+    except Exception as exc:
+        message=str(exc)[:180] if isinstance(exc,ValueError) else type(exc).__name__
+        try:status('RETRY','同步未完成，保留原链路：'+message);log('Synchronization error: '+message)
+        except Exception:pass
+        sys.exit(1)
