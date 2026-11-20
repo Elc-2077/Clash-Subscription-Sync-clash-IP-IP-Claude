@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 $ErrorActionPreference='Stop'
 $source=$PSScriptRoot
 $destination=Join-Path $env:ProgramData 'ClashSubscriptionSync'
@@ -49,8 +49,9 @@ try{
         }
     }
     if(-not $fresh){throw 'Updated background task did not report a fresh status.'}
-    [ordered]@{installed=$true;retention_policy='all-valid-subscription-nodes';time=[datetimeoffset]::Now.ToString('o');state=$status.state;firewall_changes=$false}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $source 'update-result.json') -Encoding UTF8
+    [ordered]@{installed=$true;retention_policy='all-valid-subscription-nodes';state_poll_seconds=60;time=[datetimeoffset]::Now.ToString('o');state=$status.state;firewall_changes=$false}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $source 'update-result.json') -Encoding UTF8
     Write-Host 'ALL NODES RETENTION INSTALLED' -ForegroundColor Green
+    Write-Host 'CURRENT STATE EXPORT ENABLED: every 60 seconds (read-only core API).' -ForegroundColor Green
     Write-Host 'Use your original Clash Verge icon. If Clash is open, allow the background refresh to finish.'
     Write-Host 'All valid subscription nodes are retained. Pending DNS nodes reject connections until resolved.'
     Write-Host 'Credentials, subscription, fixed exit, and Cloudflare DNS settings were preserved.'

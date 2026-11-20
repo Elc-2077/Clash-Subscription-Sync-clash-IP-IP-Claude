@@ -7,6 +7,40 @@ from sync_model import BOOT, PREFIX, entries, overlay, enhancement, stamp, publi
 
 ROOT=Path(__file__).resolve().parent
 DATA=ROOT/'data'
+STATE_POLL_SECONDS=60
+STATE_READ_TIMEOUT=8
+
+def observation(state,**fields):
+    value={'state':state,'observed_at':datetime.datetime.now().astimezone().isoformat(),
+           'observed_at_unix':time.time(),'poll_interval_seconds':STATE_POLL_SECONDS,**fields}
+    save(DATA/'current-state.json',value)
+    destination=settings().get('report_dir')
+    if destination:
+        try:save(Path(destination)/'current-state.json',value)
+        except OSError:pass
+    return value
+
+def observe_once():
+    # This read-only child has its own parent deadline, independent of reloads.
+    if not running():return observation('STOPPED',selected=None,source='clash-process-not-running')
+    try:
+        proxies=api('GET','/proxies').get('proxies',{})
+        runtime=api('GET','/configs')
+        selected=proxies.get('GLOBAL',{}).get('now')
+        if not selected:raise ValueError('No GLOBAL selection')
+        configured=load(Path(settings()['base'])/'clash-verge.yaml')
+        nodes={n['name']:n for n in configured.get('proxies',[])}
+        final=nodes.get(selected,{})
+        ingress=nodes.get(final.get('dialer-proxy'),{})
+        # The server is configuration data, never a claimed public-exit test.
+        return observation('RUNNING',source='live-core-api',selected=selected,
+                           mode=runtime.get('mode'),tun_enabled=runtime.get('tun',{}).get('enable'),
+                           ipv6=runtime.get('ipv6'),entry_protocol=ingress.get('type'),
+                           final_protocol=final.get('type'),configured_exit_server=final.get('server'),
+                           selected_fixed_chain=bool(final.get('dialer-proxy')),
+                           public_exit_verified=False)
+    except Exception as exc:
+        return observation('ERROR',source='live-core-api',selected=None,error=type(exc).__name__)
 def read(path):return json.loads(Path(path).read_text(encoding='utf-8-sig'))
 def load(path):return yaml.safe_load(Path(path).read_text(encoding='utf-8-sig')) or {}
 def dump(value):return yaml.safe_dump(value,allow_unicode=True,sort_keys=False)
@@ -160,11 +194,17 @@ def daemon():
     if not mutex:raise OSError('Cannot create subscription synchronizer mutex')
     if ctypes.windll.kernel32.GetLastError()==183:return
     worker=None;worker_at=0;next_try=0;was_running=False;next_poll=0;force_refresh=False
+    observer=None;observer_at=0;next_observe=0
     status('WAITING','等待 Clash 原生启动；不控制网络或应用启停')
+    observation('WAITING',selected=None,source='waiting-for-core-read')
     try:
         while True:
             up=running()
             if not up:
+                if observer and observer.poll() is None:kill_worker(observer)
+                observer=None;next_observe=0
+                if was_running or read(DATA/'current-state.json').get('state')!='STOPPED':
+                    observation('STOPPED',selected=None,source='clash-process-not-running')
                 if worker and worker.poll() is None:kill_worker(worker)
                 worker=None
                 if was_running or (DATA/'routes.json').exists():
@@ -172,7 +212,20 @@ def daemon():
                     except Exception as exc:log('Route cleanup retry: '+type(exc).__name__)
                 was_running=False;next_try=0
             else:
-                if not was_running:next_try=time.time()+4;was_running=True;force_refresh=True
+                if not was_running:
+                    next_try=time.time()+4;was_running=True;force_refresh=True;next_observe=time.time()+1
+                if observer:
+                    if observer.poll() is not None:observer=None
+                    elif time.time()-observer_at>STATE_READ_TIMEOUT:
+                        kill_worker(observer);observer=None
+                        observation('ERROR',selected=None,source='live-core-api',error='ReadTimeout')
+                if not observer and not worker and time.time()>=next_observe:
+                    try:
+                        observer=subprocess.Popen([settings()['python'],str(ROOT/'sync.py'),'--observe'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=0x08000000)
+                        observer_at=time.time()
+                    except OSError as exc:
+                        observation('ERROR',selected=None,source='live-core-api',error=type(exc).__name__)
+                    next_observe=time.time()+STATE_POLL_SECONDS
                 if worker:
                     if worker.poll() is not None:
                         if worker.returncode:next_try=time.time()+30
@@ -194,11 +247,13 @@ def daemon():
             time.sleep(.5)
     finally:
         if worker and worker.poll() is None:kill_worker(worker)
+        if observer and observer.poll() is None:kill_worker(observer)
         kernel.CloseHandle(mutex)
 
 if __name__=='__main__':
     try:
-        if '--once' in sys.argv:sync_once()
+        if '--observe' in sys.argv:observe_once()
+        elif '--once' in sys.argv:sync_once()
         else:daemon()
     except Exception as exc:
         message=str(exc)[:180] if isinstance(exc,ValueError) else type(exc).__name__
