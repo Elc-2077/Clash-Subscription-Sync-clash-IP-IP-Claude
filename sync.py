@@ -3,7 +3,7 @@ import concurrent.futures, copy, ctypes, datetime, hashlib, http.client, ipaddre
 import subprocess, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 import psutil, yaml
-from sync_model import BOOT, PREFIX, entries, overlay, enhancement, stamp, public4
+from sync_model import BOOT, PREFIX, entries, overlay, enhancement, stamp, public4, complete_addresses
 
 ROOT=Path(__file__).resolve().parent
 DATA=ROOT/'data'
@@ -86,7 +86,12 @@ def sync_once():
     if not running():return
     st=settings();base=Path(st['base']);item,raw=profile();before_stamp=stamp(item['uid'],raw)
     choice=preferred(api('GET','/proxies'))
-    addresses=resolve([n['server'] for n in entries(raw)])
+    source_nodes=entries(raw)
+    hosts=[n['server'] for n in source_nodes]
+    fresh=resolve(hosts)
+    cache_path=DATA/'endpoint-cache.json'
+    cache=read(cache_path) if cache_path.exists() else {}
+    addresses,new_cache,cached_hosts,unresolved_hosts=complete_addresses(hosts,fresh,cache,time.time())
     value=overlay(raw,read(DATA/'seed.json'),addresses,choice,load(base/'verge.yaml').get('enable_tun_mode',True))
     candidate=dict(load(base/'config.yaml'),**value)
     atomic(DATA/'candidate.yaml',dump(candidate))
@@ -125,9 +130,17 @@ def sync_once():
             except Exception:pass
         raise
     count=len(value['proxy-groups'][0]['proxies'])
-    summary={'stamp':before_stamp,'time':time.time(),'nodes':count,'selected':selected,'fixed_exit':read(DATA/'seed.json')['expected_ipv4'],'skipped_nodes':len(entries(raw))-count}
+    save(cache_path,new_cache)
+    unresolved_names=[n['name'] for n in source_nodes if n['server'] in unresolved_hosts]
+    cached_names=[n['name'] for n in source_nodes if n['server'] in cached_hosts]
+    summary={'stamp':before_stamp,'time':time.time(),'nodes':count,'selected':selected,'fixed_exit':read(DATA/'seed.json')['expected_ipv4'],
+             'skipped_nodes':0,'pending_nodes':len(unresolved_names),'cached_nodes':len(cached_names),'pending_names':unresolved_names,
+             'cached_names':cached_names,'retention_policy':'all-valid-subscription-nodes'}
     save(DATA/'committed.json',summary)
-    status('READY','订阅与机场地址已同步；最终出口保持用户配置的固定节点',**summary)
+    detail='全部订阅节点已保留；最终出口保持用户配置的固定节点'
+    if unresolved_names:detail+='；%d 个节点待 DNS 解析，暂拒绝连接并自动重试'%len(unresolved_names)
+    if cached_names:detail+='；%d 个节点使用 24 小时内同域名缓存'%len(cached_names)
+    status('READY',detail,**summary)
 
 def kill_worker(process):
     try:
@@ -171,7 +184,8 @@ def daemon():
                     next_poll=time.time()+3
                     try:
                         item,raw=profile();committed=read(DATA/'committed.json') if (DATA/'committed.json').exists() else {}
-                        if force_refresh or committed.get('stamp')!=stamp(item['uid'],raw) or time.time()-committed.get('time',0)>900:
+                        interval=60 if committed.get('pending_nodes') or committed.get('cached_nodes') else 900
+                        if force_refresh or committed.get('stamp')!=stamp(item['uid'],raw) or time.time()-committed.get('time',0)>interval:
                             status('SYNCING','检测到订阅变化，准备 Cloudflare 地址解析和节点链路')
                             worker=subprocess.Popen([settings()['python'],str(ROOT/'sync.py'),'--once'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=0x08000000)
                             worker_at=time.time();next_try=time.time()+30

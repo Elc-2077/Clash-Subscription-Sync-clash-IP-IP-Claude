@@ -19,6 +19,7 @@ repair-backups/
 sync-status.json
 install-result.json
 rollback-result.json
+update-result.json
 *diagnostics*.json
 *network-check*.json
 *.log
