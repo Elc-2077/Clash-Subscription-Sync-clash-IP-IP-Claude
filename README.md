@@ -39,9 +39,11 @@ Clash Verge Rev 的 Windows 订阅同步工具。
 
 ## 效果展示
 
-![固定出口链路检测示例，出口 IP 已隐藏](docs/images/fixed-exit-demo-redacted.png)
+![固定出口及 Cloudflare DNS 检测示例，代理出口 IP 已隐藏](docs/images/fixed-exit-demo-redacted.png)
 
-截图由使用者提供，已遮挡全部出口 IP；原图没有纳入仓库。页面内的评分、可用性和泄漏检测为第三方网站当时的结果，仅作界面示例，不构成对任何服务的可用性、账号稳定性或绝无泄漏的保证。
+截图由使用者提供，已遮挡个人代理出口 IP，保留 Cloudflare DNS 检测结果；原图没有纳入仓库。DNS 栏显示的解析器出口 IP 属于 DNS 服务的出站地址，不需要与最终代理出口 IP 相同；它也不是配置中的 DoH 入口地址 `1.1.1.1`/`1.0.0.1`。页面中的“Cloudflare 出口 IP”卡片反映的是访问网站时的代理出口，不能仅凭该卡片证明 DNS 上游。
+
+本工具生成的 DNS 上游为 Cloudflare 的 `https://1.1.1.1/dns-query` 和 `https://1.0.0.1/dns-query`，通过代理传输。截图的 DNS 服务商一栏也显示 Cloudflare；但页面内的评分、可用性、DNS 和 WebRTC 状态仍是第三方网站当时的结果，仅作示例，不构成对任何服务的可用性、账号稳定性或绝无泄漏的保证。“WebRTC 已禁用或无泄露”不能替代实际 UDP 出口测试。
 
 ## 准备条件
 
