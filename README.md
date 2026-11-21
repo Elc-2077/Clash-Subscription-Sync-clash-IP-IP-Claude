@@ -41,6 +41,14 @@ Clash Verge Rev 的 Windows 订阅同步工具。
 
 ## 效果展示
 
+### 网络灵动岛
+
+![网络灵动岛：本地、机场和固定出口 IP，国家旗帜与 HTTPS 耗时，真实 IP 已替换](docs/images/network-island-demo-redacted.png)
+
+截图由使用者提供，本地公网 IP、机场出口 IP、固定出口 IP 和当前最终出口均已用不透明遮盖替换为文档示例地址，原图未纳入仓库。国旗、节点名称和延迟保留界面效果；示例地址不代表其真实国家或可连接的代理。截图中的耗时仅为当次测试结果。浮窗支持拖动、60 秒自动刷新和手动刷新，随 Clash 运行状态显示或关闭。
+
+### 固定出口与 DNS
+
 ![固定出口及 Cloudflare DNS 检测示例，代理出口 IP 已隐藏](docs/images/fixed-exit-demo-redacted.png)
 
 截图由使用者提供，已遮挡个人代理出口 IP，保留 Cloudflare DNS 检测结果；原图没有纳入仓库。DNS 栏显示的解析器出口 IP 属于 DNS 服务的出站地址，不需要与最终代理出口 IP 相同；它也不是配置中的 DoH 入口地址 `1.1.1.1`/`1.0.0.1`。页面中的“Cloudflare 出口 IP”卡片反映的是访问网站时的代理出口，不能仅凭该卡片证明 DNS 上游。
