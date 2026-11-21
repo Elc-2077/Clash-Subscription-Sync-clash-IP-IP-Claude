@@ -20,12 +20,12 @@ function Copy-Item {
 }
 $previousProgramData=$env:ProgramData
 try{
- foreach($scenario in @('success','rollback')){
+ foreach($scenario in @('success','fallback-island','rollback')){
   $env:ProgramData=Join-Path $fixture $scenario
   $global:fixtureInstalled=Join-Path $env:ProgramData 'ClashSubscriptionSync'
   $global:fixturePackage=Join-Path $env:ProgramData 'package'
   $null=New-Item -ItemType Directory -Path (Join-Path $global:fixtureInstalled 'data'),$global:fixturePackage -Force
-  foreach($name in @('sync.py','sync_model.py','update_support.py')){Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $global:fixturePackage $name)}
+  foreach($name in @('sync.py','sync_model.py','update_support.py','island.py','island_probe.py','island_flags.py')){Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $global:fixturePackage $name)}
   $code=Get-Content -LiteralPath (Join-Path $source 'Update.ps1') -Raw -Encoding UTF8
   $code=$code.Replace('#Requires -RunAsAdministrator','')
   Set-Content -LiteralPath (Join-Path $global:fixturePackage 'Update.ps1') -Value $code -Encoding UTF8
@@ -35,19 +35,25 @@ try{
   Set-Content -LiteralPath $seedPath -Value '{"synthetic":"preserve"}' -Encoding UTF8
   $beforeSeed=[IO.File]::ReadAllBytes($seedPath)
   $global:fixtureTaskRunning=$true;$global:fixtureFailCopy=$scenario -eq 'rollback';$threw=$false
-  try{& (Join-Path $global:fixturePackage 'Update.ps1')}catch{$threw=$true;if($scenario -eq 'success'){throw}}
+  $beforeSettings=[IO.File]::ReadAllBytes((Join-Path $global:fixtureInstalled 'settings.json'))
+  try{& (Join-Path $global:fixturePackage 'Update.ps1') -EnableAirportFallback:($scenario -ne 'success') -EnableIsland:($scenario -ne 'success')}catch{$threw=$true;if($scenario -ne 'rollback'){throw}}
   if(-not $global:fixtureTaskRunning){throw 'Task was not restarted'}
   if([Convert]::ToBase64String($beforeSeed) -ne [Convert]::ToBase64String([IO.File]::ReadAllBytes($seedPath))){throw 'Seed changed'}
-  if($scenario -eq 'success'){
+  if($scenario -ne 'rollback'){
    foreach($name in @('sync.py','sync_model.py')){
     if((Get-FileHash -LiteralPath (Join-Path $source $name)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $global:fixtureInstalled $name)).Hash){throw 'New code not installed'}
    }
    if(-not(Test-Path -LiteralPath (Join-Path $global:fixturePackage 'update-result.json'))){throw 'Missing success report'}
+   $changed=Get-Content -LiteralPath (Join-Path $global:fixtureInstalled 'settings.json') -Raw -Encoding UTF8|ConvertFrom-Json
+   if($scenario -eq 'fallback-island' -and (-not $changed.fallback_to_airport -or -not $changed.enable_island)){throw 'Feature flags were not saved'}
+   foreach($name in @('island.py','island_probe.py','island_flags.py')){if(-not(Test-Path -LiteralPath (Join-Path $global:fixtureInstalled $name))){throw 'Island files missing'}}
   }else{
    if(-not $threw){throw 'Injected copy failure did not throw'}
    foreach($name in @('sync.py','sync_model.py')){
     if((Get-Content -LiteralPath (Join-Path $global:fixtureInstalled $name) -Raw).Trim() -ne '# old fixture'){throw 'Old code was not restored'}
    }
+   if([Convert]::ToBase64String($beforeSettings) -ne [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $global:fixtureInstalled 'settings.json')))){throw 'Settings not restored'}
+   foreach($name in @('island.py','island_probe.py','island_flags.py')){if(Test-Path -LiteralPath (Join-Path $global:fixtureInstalled $name)){throw 'New island files were not rolled back'}}
   }
   Write-Host ('PASS updater '+$scenario)
  }

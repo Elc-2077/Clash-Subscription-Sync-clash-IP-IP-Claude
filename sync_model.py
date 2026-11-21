@@ -2,6 +2,7 @@ import copy, hashlib, ipaddress, json, re
 
 BOOT='__SUBSYNC_CF__'
 PREFIX='__SUBSYNC_AIRPORT__'
+FIXED_PREFIX='__SUBSYNC_FIXED__'
 META=re.compile(r'^(剩余流量|距离下次|套餐到期|官网|客服邮箱)')
 CACHE_MAX_AGE=24*60*60
 
@@ -40,7 +41,7 @@ def entries(raw):
     result=[];names=set()
     for value in raw.get('proxies',[]):
         if not isinstance(value,dict) or not value.get('server') or META.match(str(value.get('name',''))):continue
-        if not isinstance(value.get('name'),str) or value['name'] in names or value['name'] in ('GLOBAL','DIRECT','REJECT',BOOT) or value['name'].startswith(PREFIX):
+        if not isinstance(value.get('name'),str) or value['name'] in names or value['name'] in ('GLOBAL','DIRECT','REJECT',BOOT) or value['name'].startswith((PREFIX,FIXED_PREFIX)):
             raise ValueError('Duplicate or reserved airport name')
         if value.get('dialer-proxy'):raise ValueError('Nested airport chains are not supported')
         if not value.get('type') or not 1<=int(value.get('port',0))<=65535:continue
@@ -56,13 +57,13 @@ def pin(node,addresses):
         elif p.get('tls'):p.setdefault('servername',host)
     return p
 
-def overlay(raw,seed,addresses,preferred,tun_enabled=True):
+def overlay(raw,seed,addresses,preferred,tun_enabled=True,fallback_to_airport=False):
     final=copy.deepcopy(seed['final']);final.pop('dialer-proxy',None)
     public4(seed['expected_ipv4'])
     public4(final['server'])
     selected=entries(raw)
     selected.sort(key=lambda n:n['name']!=preferred)
-    airport=[];chains=[];blocked=[]
+    airport=[];chains=[];blocked=[];fallbacks=[]
     for item in selected:
         ingress=PREFIX+item['name']
         if addresses.get(item['server']):
@@ -71,15 +72,20 @@ def overlay(raw,seed,addresses,preferred,tun_enabled=True):
             # Keep the public node name and final exit unchanged. A hidden reject-only
             # dialer prevents unresolved domains from recursing through the active TUN.
             blocked.append({'name':ingress,'type':'select','proxies':['REJECT'],'hidden':True})
-        chain=copy.deepcopy(final);chain.update({'name':item['name'],'dialer-proxy':ingress,'udp':True})
+        chain_name=FIXED_PREFIX+item['name'] if fallback_to_airport else item['name']
+        chain=copy.deepcopy(final);chain.update({'name':chain_name,'dialer-proxy':ingress,'udp':True})
         chains.append(chain)
+        if fallback_to_airport:
+            fallbacks.append({'name':item['name'],'type':'fallback','proxies':[chain_name,ingress],
+                              'url':'https://1.1.1.1/cdn-cgi/trace','expected-status':200,
+                              'interval':30,'timeout':5000,'max-failed-times':1,'lazy':True,'hidden':True})
     boot=copy.deepcopy(seed['bootstrap']);boot['name']=BOOT;boot['interface-name']=seed['interface']
     boot.pop('dialer-proxy',None)
     ips=sorted({public4(p['server']) for p in airport+[boot,final]})
     cf=['https://1.1.1.1/dns-query#GLOBAL','https://1.0.0.1/dns-query#GLOBAL']
     bootcf=['https://1.1.1.1/dns-query#'+BOOT,'https://1.0.0.1/dns-query#'+BOOT]
     return {'proxies':airport+chains+[boot],'proxy-providers':{},'rule-providers':{},
-            'proxy-groups':[{'name':'GLOBAL','type':'select','proxies':[p['name'] for p in chains]}]+blocked,
+            'proxy-groups':[{'name':'GLOBAL','type':'select','proxies':[p['name'] for p in (fallbacks if fallback_to_airport else chains)]}]+fallbacks+blocked,
             'rules':['MATCH,GLOBAL'],'mode':'global','ipv6':False,'allow-lan':False,
             'interface-name':seed['interface'],'profile':{'store-selected':True},
             'tun':{'enable':bool(tun_enabled),'device':'RevFixedTun','stack':'gvisor','auto-route':True,

@@ -47,6 +47,11 @@ class Observation(unittest.TestCase):
  def test_empty_core_selection_is_an_error(self):
   with patch.object(sync,'api',return_value={}):value=sync.observe_once()
   self.assertEqual(value['state'],'ERROR');self.assertIsNone(value['selected'])
+ def test_live_export_identifies_airport_fallback(self):
+  cfg=sync.load(self.base/'clash-verge.yaml');cfg['proxies'].append({'name':'__SUBSYNC_AIRPORT__Choice A','type':'vless','server':'1.1.1.1'})
+  (self.base/'clash-verge.yaml').write_text(sync.dump(cfg),encoding='utf-8')
+  with patch.object(sync,'api',side_effect=[{'proxies':{'GLOBAL':{'now':'Choice A'},'Choice A':{'now':'__SUBSYNC_AIRPORT__Choice A'}}},{'mode':'global','tun':{'enable':True}}]):value=sync.observe_once()
+  self.assertEqual(value['active_route'],'airport-fallback');self.assertFalse(value['selected_fixed_chain'])
  def test_sixty_second_observation_does_not_reload_every_minute(self):
   class EndLoop(Exception):pass
   clock=[1000.0];calls=[]

@@ -31,6 +31,19 @@ class Tests(unittest.TestCase):
 
  def test_placeholder_template_is_not_a_live_config(self):
   with self.assertRaises(ValueError):setup_config.read_user(ROOT/'user-config.example.yaml')
+ def test_optional_features_are_off_by_default_and_require_boolean_values(self):
+  self.run_initialize()
+  self.assertFalse(any(g.get('type')=='fallback' for g in sync.load(self.base/'clash-verge.yaml')['proxy-groups']))
+  for key in ('enable_island','fallback_to_airport'):
+   bad=dict(self.user,**{key:'false'});path=self.root/'bad.yaml';path.write_text(sync.dump(bad),encoding='utf-8')
+   with self.assertRaises(ValueError):setup_config.read_user(path)
+ def test_first_setup_can_enable_airport_fallback(self):
+  user=dict(self.user,fallback_to_airport=True,enable_island=True)
+  (self.root/'user-config.yaml').write_text(sync.dump(user),encoding='utf-8')
+  self.run_initialize()
+  groups=sync.load(self.base/'clash-verge.yaml')['proxy-groups']
+  group=next(g for g in groups if g.get('type')=='fallback')
+  self.assertEqual(group['name'],'Example Airport');self.assertNotIn('DIRECT',group['proxies'])
  def test_no_personal_seed_required_and_exit_ip_may_differ_from_server(self):
   self.run_initialize()
   seed=sync.read(self.data/'seed.json')

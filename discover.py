@@ -16,7 +16,8 @@ def discover(path):
     if not isinstance(interface,str):raise ValueError('physical_interface must be a string')
     pythonw=Path(sys.executable).with_name('pythonw.exe')
     if not pythonw.is_file():raise ValueError('pythonw.exe was not found next to the selected Python interpreter')
-    return {'base':str(base),'core':str(core),'python':sys.executable,'pythonw':str(pythonw),'interface':interface}
+    return {'base':str(base),'core':str(core),'python':sys.executable,'pythonw':str(pythonw),'interface':interface,
+            'enable_island':value.get('enable_island',False),'fallback_to_airport':value.get('fallback_to_airport',False)}
 
 if __name__=='__main__':
     try:print(json.dumps(discover(sys.argv[1]),ensure_ascii=True))

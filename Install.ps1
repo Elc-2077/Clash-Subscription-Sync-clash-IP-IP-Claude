@@ -60,11 +60,11 @@ try{
         $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id,$entry[1],'ContainerInherit,ObjectInherit','None','Allow')))
     }
     Set-Acl -LiteralPath $destination -AclObject $acl
-    foreach($name in @('sync.py','sync_model.py','Routes.ps1','setup_config.py','Uninstall.ps1')){
+    foreach($name in @('sync.py','sync_model.py','island.py','island_probe.py','island_flags.py','Routes.ps1','setup_config.py','update_support.py','Uninstall.ps1')){
         Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $destination $name) -Force
     }
     Copy-Item -LiteralPath $userConfig -Destination (Join-Path $destination 'user-config.yaml') -Force
-    $settings=[ordered]@{base=$metadata.base;python=$metadata.python;core=$metadata.core;interface=$metadata.interface;report_dir=$source;userSid=$sid;shareVersion=1}
+    $settings=[ordered]@{base=$metadata.base;python=$metadata.python;core=$metadata.core;interface=$metadata.interface;report_dir=$source;userSid=$sid;shareVersion=2;enable_island=[bool]$metadata.enable_island;fallback_to_airport=[bool]$metadata.fallback_to_airport}
     $settings|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $destination 'settings.json') -Encoding UTF8
     # No network lock or endpoint routes are applied during initial setup.
     & $python (Join-Path $destination 'setup_config.py')

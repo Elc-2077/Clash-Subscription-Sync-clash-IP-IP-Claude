@@ -4,7 +4,7 @@ from pathlib import Path
 import psutil
 
 def validate_source(root):
-    for name in ('sync.py','sync_model.py'):
+    for name in ('sync.py','sync_model.py','island.py','island_probe.py','island_flags.py'):
         ast.parse((Path(root)/name).read_text(encoding='utf-8-sig'))
 
 def is_worker(info,target):
@@ -36,7 +36,7 @@ def stop_workers(target):
 
 def clear_bytecode(root):
     cache=Path(root)/'__pycache__'
-    for pattern in ('sync.*.pyc','sync_model.*.pyc'):
+    for pattern in ('sync.*.pyc','sync_model.*.pyc','island.*.pyc','island_probe.*.pyc','island_flags.*.pyc'):
         for file in cache.glob(pattern):file.unlink()
 
 if __name__=='__main__':

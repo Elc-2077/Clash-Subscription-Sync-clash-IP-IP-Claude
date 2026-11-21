@@ -18,6 +18,9 @@ repair-backups/
 # Local diagnostics, subscriptions, runtime state and exports
 sync-status.json
 current-state.json
+island-metrics.json
+island-window.json
+island-ui-error.json
 install-result.json
 rollback-result.json
 update-result.json

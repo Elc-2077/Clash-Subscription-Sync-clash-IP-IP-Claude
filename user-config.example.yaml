@@ -6,6 +6,10 @@ clash_data_directory: ''
 clash_core_path: ''
 physical_interface: ''
 
+# 可选功能，默认关闭。浮窗与 Clash 同启停；回退会主动改变网站看到的出口 IP。
+enable_island: false
+fallback_to_airport: false
+
 # 服务商承诺的最终公网 IPv4，用于登记。它可以与代理服务器连接地址不同。
 expected_exit_ipv4: YOUR_FIXED_EXIT_IPV4
 

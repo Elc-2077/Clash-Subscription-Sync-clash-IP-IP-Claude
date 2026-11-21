@@ -1,4 +1,5 @@
 ﻿#Requires -RunAsAdministrator
+param([switch]$EnableAirportFallback,[switch]$EnableIsland)
 $ErrorActionPreference='Stop'
 $source=$PSScriptRoot
 $destination=Join-Path $env:ProgramData 'ClashSubscriptionSync'
@@ -6,6 +7,8 @@ $taskName='ClashSubscriptionSync'
 $log=Join-Path $source ('update-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+$PID+'.log')
 $mutex=New-Object Threading.Mutex($false,'Global\ClashSubscriptionSyncInstaller')
 $owned=$false;$stopped=$false;$replaced=$false;$backup=$null
+$files=@('sync.py','sync_model.py','island.py','island_probe.py','island_flags.py')
+$existed=@{}
 try{$owned=$mutex.WaitOne(0)}catch [Threading.AbandonedMutexException]{$owned=$true}
 if(-not $owned){Write-Host 'Another installer is running.';$mutex.Dispose();exit 1}
 Start-Transcript -Path $log -Force|Out-Null
@@ -15,7 +18,7 @@ try{
     $helper=Join-Path $source 'update_support.py'
     if(-not(Test-Path -LiteralPath $helper)){throw 'Missing update_support.py'}
     if(-not(Test-Path -LiteralPath $settings.python)){throw 'Installed Python runtime is missing.'}
-    foreach($name in @('sync.py','sync_model.py')){
+    foreach($name in $files){
         if(-not(Test-Path -LiteralPath (Join-Path $source $name))){throw ('Missing update file: '+$name)}
     }
     # Parse the new sources before stopping the existing synchronizer.
@@ -23,15 +26,25 @@ try{
     if($LASTEXITCODE -ne 0){throw 'Update sources failed syntax validation.'}
     $backup=Join-Path $destination ('backups\retention-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+$PID)
     New-Item -ItemType Directory -Path $backup -Force|Out-Null
-    foreach($name in @('sync.py','sync_model.py')){Copy-Item -LiteralPath (Join-Path $destination $name) -Destination (Join-Path $backup $name) -Force}
+    foreach($name in ($files+@('settings.json'))){
+        $existed[$name]=Test-Path -LiteralPath (Join-Path $destination $name)
+        if($existed[$name]){Copy-Item -LiteralPath (Join-Path $destination $name) -Destination (Join-Path $backup $name) -Force}
+    }
     Stop-ScheduledTask -TaskName $taskName
     $stopped=$true
     # Stop only the installed synchronization worker and its own descendants.
     # Never terminate Clash or touch firewall, DNS adapters, or default routes.
     & $settings.python $helper stop-workers (Join-Path $destination 'sync.py')
     if($LASTEXITCODE -ne 0){throw 'Could not stop the existing synchronization worker safely.'}
+    & $settings.python $helper stop-workers (Join-Path $destination 'island.py')
+    if($LASTEXITCODE -ne 0){throw 'Could not stop previous island window.'}
     $replaced=$true
-    foreach($name in @('sync.py','sync_model.py')){Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $destination $name) -Force}
+    foreach($name in $files){Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $destination $name) -Force}
+    if($EnableAirportFallback -or $EnableIsland){
+        if($EnableAirportFallback){$settings|Add-Member -MemberType NoteProperty -Name fallback_to_airport -Value $true -Force}
+        if($EnableIsland){$settings|Add-Member -MemberType NoteProperty -Name enable_island -Value $true -Force}
+        $settings|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $destination 'settings.json') -Encoding UTF8
+    }
     # Old bytecode must not hide the update on same-size/same-time replacements.
     & $settings.python $helper clear-bytecode $destination
     if($LASTEXITCODE -ne 0){throw 'Could not clear old synchronization bytecode.'}
@@ -49,9 +62,11 @@ try{
         }
     }
     if(-not $fresh){throw 'Updated background task did not report a fresh status.'}
-    [ordered]@{installed=$true;retention_policy='all-valid-subscription-nodes';state_poll_seconds=60;time=[datetimeoffset]::Now.ToString('o');state=$status.state;firewall_changes=$false}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $source 'update-result.json') -Encoding UTF8
+    [ordered]@{installed=$true;retention_policy='all-valid-subscription-nodes';state_poll_seconds=60;fallback_to_airport=[bool]$settings.fallback_to_airport;enable_island=[bool]$settings.enable_island;time=[datetimeoffset]::Now.ToString('o');state=$status.state;firewall_changes=$false}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $source 'update-result.json') -Encoding UTF8
     Write-Host 'ALL NODES RETENTION INSTALLED' -ForegroundColor Green
     Write-Host 'CURRENT STATE EXPORT ENABLED: every 60 seconds (read-only core API).' -ForegroundColor Green
+    if($settings.fallback_to_airport){Write-Host 'AIRPORT FALLBACK ENABLED: prefer fixed exit; fall back to airport; recover automatically.' -ForegroundColor Yellow}
+    if($settings.enable_island){Write-Host 'NETWORK ISLAND ENABLED: follows Clash; refreshes every 60 seconds.' -ForegroundColor Green}
     Write-Host 'Use your original Clash Verge icon. If Clash is open, allow the background refresh to finish.'
     Write-Host 'All valid subscription nodes are retained. Pending DNS nodes reject connections until resolved.'
     Write-Host 'Credentials, subscription, fixed exit, and Cloudflare DNS settings were preserved.'
@@ -62,7 +77,12 @@ try{
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         if($replaced -and $backup){
             & $settings.python $helper stop-workers (Join-Path $destination 'sync.py')
-            foreach($name in @('sync.py','sync_model.py')){Copy-Item -LiteralPath (Join-Path $backup $name) -Destination (Join-Path $destination $name) -Force}
+            & $settings.python $helper stop-workers (Join-Path $destination 'island.py')
+            foreach($name in ($files+@('settings.json'))){
+                $target=Join-Path $destination $name
+                if($existed[$name]){Copy-Item -LiteralPath (Join-Path $backup $name) -Destination $target -Force}
+                elseif(Test-Path -LiteralPath $target){Remove-Item -LiteralPath $target -Force}
+            }
             & $settings.python $helper clear-bytecode $destination
         }
         Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue

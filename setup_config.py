@@ -31,6 +31,8 @@ def node_check(value,label):
 def read_user(path):
     value=sync.load(path)
     if not isinstance(value,dict):raise ValueError('user-config.yaml must contain a YAML mapping')
+    for flag in ('enable_island','fallback_to_airport'):
+        if flag in value and not isinstance(value[flag],bool):raise ValueError(flag+': use YAML true or false')
     expected=public4(value.get('expected_exit_ipv4',''))
     final=node_check(value.get('final_exit'),'final_exit')
     bootstrap=node_check(value.get('bootstrap'),'bootstrap')
@@ -91,7 +93,7 @@ def initialize():
     raw=sync.load(base/'profiles'/relative);originals=entries(raw)
     addresses=resolve_initial(raw,seed,settings,root)
     preferred=next((s.get('now') for s in item.get('selected',[]) if s.get('name')=='GLOBAL' and s.get('now') in {p['name'] for p in originals}),originals[0]['name'])
-    value=overlay(raw,seed,addresses,preferred,True)
+    value=overlay(raw,seed,addresses,preferred,True,user.get('fallback_to_airport',False))
     script=enhancement(value)
     if not any(i.get('uid')=='SubSync' for i in profiles['items']):profiles['items'].append({'uid':'SubSync','type':'script','name':'Subscription Sync · Fixed Exit','file':'SubSync.js'})
     # Only the current remote profile is enrolled. New airport subscriptions must

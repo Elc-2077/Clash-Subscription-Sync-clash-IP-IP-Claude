@@ -3,7 +3,7 @@ import concurrent.futures, copy, ctypes, datetime, hashlib, http.client, ipaddre
 import subprocess, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 import psutil, yaml
-from sync_model import BOOT, PREFIX, entries, overlay, enhancement, stamp, public4, complete_addresses
+from sync_model import BOOT, PREFIX, FIXED_PREFIX, entries, overlay, enhancement, stamp, public4, complete_addresses
 
 ROOT=Path(__file__).resolve().parent
 DATA=ROOT/'data'
@@ -30,14 +30,23 @@ def observe_once():
         if not selected:raise ValueError('No GLOBAL selection')
         configured=load(Path(settings()['base'])/'clash-verge.yaml')
         nodes={n['name']:n for n in configured.get('proxies',[])}
-        final=nodes.get(selected,{})
+        selected_group=proxies.get(selected,{})
+        active=selected_group.get('now',selected)
+        final=nodes.get(active,{})
+        fixed=nodes.get(FIXED_PREFIX+selected,nodes.get(selected,{}))
+        if active.startswith(PREFIX):route_kind='airport-fallback'
+        elif final.get('dialer-proxy'):route_kind='fixed-exit'
+        else:route_kind='other'
         ingress=nodes.get(final.get('dialer-proxy'),{})
+        if route_kind=='airport-fallback':ingress=final
         # The server is configuration data, never a claimed public-exit test.
         return observation('RUNNING',source='live-core-api',selected=selected,
                            mode=runtime.get('mode'),tun_enabled=runtime.get('tun',{}).get('enable'),
                            ipv6=runtime.get('ipv6'),entry_protocol=ingress.get('type'),
-                           final_protocol=final.get('type'),configured_exit_server=final.get('server'),
+                           final_protocol=final.get('type'),configured_exit_server=fixed.get('server'),active_server=final.get('server'),
                            selected_fixed_chain=bool(final.get('dialer-proxy')),
+                           active_proxy=active,active_route=route_kind,
+                           fallback_to_airport=settings().get('fallback_to_airport',False),
                            public_exit_verified=False)
     except Exception as exc:
         return observation('ERROR',source='live-core-api',selected=None,error=type(exc).__name__)
@@ -126,7 +135,8 @@ def sync_once():
     cache_path=DATA/'endpoint-cache.json'
     cache=read(cache_path) if cache_path.exists() else {}
     addresses,new_cache,cached_hosts,unresolved_hosts=complete_addresses(hosts,fresh,cache,time.time())
-    value=overlay(raw,read(DATA/'seed.json'),addresses,choice,load(base/'verge.yaml').get('enable_tun_mode',True))
+    fallback_enabled=st.get('fallback_to_airport',False)
+    value=overlay(raw,read(DATA/'seed.json'),addresses,choice,load(base/'verge.yaml').get('enable_tun_mode',True),fallback_enabled)
     candidate=dict(load(base/'config.yaml'),**value)
     atomic(DATA/'candidate.yaml',dump(candidate))
     checked=subprocess.run([st['core'],'-t','-d',str(base),'-f',str(DATA/'candidate.yaml')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=20,creationflags=0x08000000)
@@ -169,9 +179,10 @@ def sync_once():
     cached_names=[n['name'] for n in source_nodes if n['server'] in cached_hosts]
     summary={'stamp':before_stamp,'time':time.time(),'nodes':count,'selected':selected,'fixed_exit':read(DATA/'seed.json')['expected_ipv4'],
              'skipped_nodes':0,'pending_nodes':len(unresolved_names),'cached_nodes':len(cached_names),'pending_names':unresolved_names,
-             'cached_names':cached_names,'retention_policy':'all-valid-subscription-nodes'}
+             'cached_names':cached_names,'retention_policy':'all-valid-subscription-nodes','fallback_to_airport':fallback_enabled}
     save(DATA/'committed.json',summary)
     detail='全部订阅节点已保留；最终出口保持用户配置的固定节点'
+    if fallback_enabled:detail='全部订阅节点已保留；优先固定出口，不可用时回退所选机场出口'
     if unresolved_names:detail+='；%d 个节点待 DNS 解析，暂拒绝连接并自动重试'%len(unresolved_names)
     if cached_names:detail+='；%d 个节点使用 24 小时内同域名缓存'%len(cached_names)
     status('READY',detail,**summary)
@@ -195,12 +206,16 @@ def daemon():
     if ctypes.windll.kernel32.GetLastError()==183:return
     worker=None;worker_at=0;next_try=0;was_running=False;next_poll=0;force_refresh=False
     observer=None;observer_at=0;next_observe=0
+    island=None;island_suppressed=False;next_island=0
+    ui_settings=settings()
     status('WAITING','等待 Clash 原生启动；不控制网络或应用启停')
     observation('WAITING',selected=None,source='waiting-for-core-read')
     try:
         while True:
             up=running()
             if not up:
+                if island and island.poll() is None:kill_worker(island)
+                island=None;island_suppressed=False;next_island=0
                 if observer and observer.poll() is None:kill_worker(observer)
                 observer=None;next_observe=0
                 if was_running or read(DATA/'current-state.json').get('state')!='STOPPED':
@@ -212,6 +227,14 @@ def daemon():
                     except Exception as exc:log('Route cleanup retry: '+type(exc).__name__)
                 was_running=False;next_try=0
             else:
+                if island and island.poll() is not None:
+                    island_suppressed=island.returncode==42
+                    island=None;next_island=time.time()+10
+                if ui_settings.get('enable_island') and not island and not island_suppressed and time.time()>=next_island:
+                    try:
+                        interpreter=Path(ui_settings['python']).with_name('pythonw.exe')
+                        island=subprocess.Popen([str(interpreter),'-B',str(ROOT/'island.py'),str(ROOT/'settings.json')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=0x08000000)
+                    except OSError:next_island=time.time()+30
                 if not was_running:
                     next_try=time.time()+4;was_running=True;force_refresh=True;next_observe=time.time()+1
                 if observer:
@@ -248,6 +271,7 @@ def daemon():
     finally:
         if worker and worker.poll() is None:kill_worker(worker)
         if observer and observer.poll() is None:kill_worker(observer)
+        if island and island.poll() is None:kill_worker(island)
         kernel.CloseHandle(mutex)
 
 if __name__=='__main__':
