@@ -20,9 +20,9 @@ def observation(state,**fields):
         except OSError:pass
     return value
 
-def observe_once():
+def read_core_state():
     # This read-only child has its own parent deadline, independent of reloads.
-    if not running():return observation('STOPPED',selected=None,source='clash-process-not-running')
+    if not running():return dict(state='STOPPED',selected=None,source='clash-process-not-running')
     try:
         proxies=api('GET','/proxies').get('proxies',{})
         runtime=api('GET','/configs')
@@ -40,7 +40,7 @@ def observe_once():
         ingress=nodes.get(final.get('dialer-proxy'),{})
         if route_kind=='airport-fallback':ingress=final
         # The server is configuration data, never a claimed public-exit test.
-        return observation('RUNNING',source='live-core-api',selected=selected,
+        return dict(state='RUNNING',source='live-core-api',selected=selected,
                            mode=runtime.get('mode'),tun_enabled=runtime.get('tun',{}).get('enable'),
                            ipv6=runtime.get('ipv6'),entry_protocol=ingress.get('type'),
                            final_protocol=final.get('type'),configured_exit_server=fixed.get('server'),active_server=final.get('server'),
@@ -49,7 +49,11 @@ def observe_once():
                            fallback_to_airport=settings().get('fallback_to_airport',False),
                            public_exit_verified=False)
     except Exception as exc:
-        return observation('ERROR',source='live-core-api',selected=None,error=type(exc).__name__)
+        return dict(state='ERROR',source='live-core-api',selected=None,error=type(exc).__name__)
+
+def observe_once():
+    value=read_core_state();state=value.pop('state')
+    return observation(state,**value)
 def read(path):return json.loads(Path(path).read_text(encoding='utf-8-sig'))
 def load(path):return yaml.safe_load(Path(path).read_text(encoding='utf-8-sig')) or {}
 def dump(value):return yaml.safe_dump(value,allow_unicode=True,sort_keys=False)
@@ -276,7 +280,8 @@ def daemon():
 
 if __name__=='__main__':
     try:
-        if '--observe' in sys.argv:observe_once()
+        if '--snapshot' in sys.argv:print(json.dumps(dict(read_core_state(),observed_at_unix=time.time()),ensure_ascii=True))
+        elif '--observe' in sys.argv:observe_once()
         elif '--once' in sys.argv:sync_once()
         else:daemon()
     except Exception as exc:

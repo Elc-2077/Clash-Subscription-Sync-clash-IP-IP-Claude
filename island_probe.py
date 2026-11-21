@@ -84,14 +84,31 @@ def stop_process(process):
             except psutil.NoSuchProcess:pass
         process.kill();process.wait(timeout=4)
     except (psutil.NoSuchProcess,ProcessLookupError):pass
+def redact_private_metrics(result,settings):
+    if settings.get('hide_local_info',True):
+        result['local']={'ok':False,'hidden':True,'ip':None,'country':None,'mean_ms':None}
+    if settings.get('hide_airport_ip',True):
+        airport=result.setdefault('airport',{});current=result.setdefault('current',{})
+        if (airport.get('ip') and airport.get('ip')==current.get('ip')) or result.get('core_active_route')=='airport-fallback':
+            current['ip']=None;current['ip_hidden']=True
+        airport['ip']=None;airport['ip_hidden']=True
+    return result
+def live_snapshot(settings,timeout=4):
+    # Read the core now. Never use the minute-old export for new measurements.
+    try:
+        process=subprocess.run([settings['python'],'-B',str(Path(__file__).with_name('sync.py')),'--snapshot'],capture_output=True,timeout=timeout,creationflags=0x08000000)
+        if process.returncode:raise ValueError('Core snapshot child failed')
+        value=json.loads(process.stdout)
+        return value
+    except Exception as exc:return {'state':'ERROR','selected':None,'error':type(exc).__name__,'source':'live-core-api'}
 def probe(settings):
     base=Path(settings['base']);folder=Path(settings['report_dir'])
     configured=load(base/'clash-verge.yaml');basic=load(base/'config.yaml')
-    state=read(folder/'current-state.json') if (folder/'current-state.json').exists() else {}
+    state=live_snapshot(settings)
     age=time.time()-float(state.get('observed_at_unix',0))
     selected=state.get('selected') if state.get('state')=='RUNNING' and 0<=age<=90 else None
     result={'measured_at_unix':time.time(),'selected':selected,'selection_age_seconds':round(age,1),
-            'selection_fresh':selected is not None,'state_source':'60-second-core-export',
+            'selection_fresh':selected is not None,'state_source':'live-core-api',
             'local':{'ok':False},'airport':{'ok':False},'fixed':{'ok':False},'current':{'ok':False},
             'fallback_configured':bool(settings.get('fallback_to_airport')),
             'core_active_route':state.get('active_route'),'metric':'HTTPS including CONNECT/TLS and response headers; averages of up to 3 attempts'}
@@ -125,8 +142,8 @@ def probe(settings):
             def local_probe():
                 endpoint,hostname=physical_target(configured)
                 return trace_physical(settings['interface'],endpoint,hostname)
-            jobs={'local':lambda:measure(local_probe,1),
-                  'current':lambda:measure(lambda:trace_proxy(int(basic.get('mixed-port',7897))))}
+            jobs={'current':lambda:measure(lambda:trace_proxy(int(basic.get('mixed-port',7897))))}
+            if not settings.get('hide_local_info',True):jobs['local']=lambda:measure(local_probe,1)
             if ports:
                 jobs.update(airport=lambda:measure(lambda:trace_proxy(ports['airport'])),fixed=lambda:measure(lambda:trace_proxy(ports['fixed'])))
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
@@ -137,10 +154,10 @@ def probe(settings):
             if worker and worker.poll() is None:stop_process(worker)
     result['configured_fixed_server']=final.get('server')
     result['completed_at_unix']=time.time()
-    latest=read(folder/'current-state.json') if (folder/'current-state.json').exists() else {}
-    result['selection_changed_during_test']=latest.get('selected')!=state.get('selected')
+    latest=live_snapshot(settings)
+    result['selection_changed_during_test']=latest.get('state')!='RUNNING' or latest.get('selected')!=state.get('selected')
     if result['selection_changed_during_test']:result['selection_fresh']=False
-    return result
+    return redact_private_metrics(result,settings)
 
 if __name__=='__main__':
     try:

@@ -31,6 +31,10 @@ class Observation(unittest.TestCase):
   for name in ('committed.json','status.json'):self.assertEqual(sync.read(self.data/name),{'sentinel':True})
   self.assertEqual(sync.read(self.report/'current-state.json'),value)
   text=json.dumps(value);self.assertNotIn('never-export',text);self.assertNotIn('password',text);self.assertNotIn('uuid',text)
+ def test_immediate_snapshot_does_not_write_the_minute_export(self):
+  with patch.object(sync,'api',side_effect=self.api):value=sync.read_core_state()
+  self.assertEqual(value['selected'],'Choice A');self.assertEqual(value['state'],'RUNNING')
+  self.assertFalse((self.report/'current-state.json').exists());self.assertFalse((self.data/'current-state.json').exists())
  def test_error_clears_old_selection_and_omits_raw_exception(self):
   with patch.object(sync,'api',side_effect=self.api):sync.observe_once()
   with patch.object(sync,'api',side_effect=PermissionError('private-secret-in-exception')):value=sync.observe_once()
